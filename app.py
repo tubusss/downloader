@@ -17,8 +17,9 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 tasks = {}
 
+import os
 COBALT_INSTANCES = [
-    'https://cobalt-api-production-69b7.up.railway.app',
+    os.environ.get('COBALT_URL', 'https://cobalt-api-production-69b7.up.railway.app'),
 ]
 
 HTML = '''<!DOCTYPE html>
