@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template_string, redirect
+from flask import Flask, request, jsonify, render_template_string
 import yt_dlp
 import os
 import tempfile
@@ -54,11 +54,15 @@ HTML = '''<!DOCTYPE html>
     background-repeat: no-repeat; background-position: right 12px center;
   }
   select:focus { border-color: #4db8ff; }
-  .btn { width: 100%; padding: 15px; border-radius: 12px; border: none; font-size: 1rem; font-weight: 600; cursor: pointer; transition: all 0.2s; margin-top: 4px; }
+  .btn {
+    width: 100%; padding: 15px; border-radius: 12px; border: none;
+    font-size: 1rem; font-weight: 600; cursor: pointer; transition: all 0.2s; margin-top: 4px;
+  }
   .btn-primary { background: linear-gradient(135deg, #1a7fd4, #0f5fa8); color: #fff; }
   .btn-primary:active { transform: scale(0.98); }
   .btn-primary:disabled { background: #2a3448; color: #4a5a70; cursor: not-allowed; }
-  .btn-secondary { background: #0f5fa8; color: #fff; display: none; margin-top: 10px; text-decoration: none; text-align: center; padding: 15px; border-radius: 12px; font-size: 1rem; font-weight: 600; }
+  .btn-green { background: linear-gradient(135deg, #1a9a4a, #0f7a35); color: #fff; display: none; margin-top: 10px; }
+  .btn-green:active { transform: scale(0.98); }
   .status-box { background: #0f1520; border-radius: 12px; padding: 14px; margin-top: 12px; display: none; border: 1px solid #2a3448; }
   .status-text { font-size: 0.85rem; color: #8aa0bf; line-height: 1.6; }
   .progress-bar { width: 100%; height: 6px; background: #2a3448; border-radius: 3px; margin-top: 10px; overflow: hidden; }
@@ -70,7 +74,6 @@ HTML = '''<!DOCTYPE html>
   .sites-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
   .error { color: #ff6b6b; }
   .success { color: #4dffaa; }
-  .info { color: #4db8ff; }
   .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #2a3448; border-top-color: #4db8ff; border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: middle; margin-right: 6px; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .ping-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #4dffaa; margin-right: 5px; animation: pulse 2s infinite; }
@@ -130,8 +133,9 @@ HTML = '''<!DOCTYPE html>
   <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
 </div>
 
-<!-- Кнопка для не-YouTube файлов с нашего сервера -->
-<a id="fileBtnServer" class="btn-secondary" href="#" style="display:none">💾 Сохранить файл</a>
+<!-- Кнопка появляется после готовности, пользователь нажимает сам -->
+<button class="btn btn-green" id="saveBtnYT" onclick="saveYT()">💾 Нажмите чтобы скачать</button>
+<button class="btn btn-green" id="saveBtnServer" onclick="saveServer()">💾 Сохранить файл</button>
 
 <div class="card" style="margin-top:16px">
   <div class="card-title">📋 Поддерживаемые сайты</div>
@@ -156,6 +160,8 @@ HTML = '''<!DOCTYPE html>
 <script>
 let currentTaskId = null;
 let pollInterval = null;
+let pendingCobaltUrl = null;
+let pendingServerTaskId = null;
 
 setInterval(() => { fetch('/ping').catch(() => {}); }, 4 * 60 * 1000);
 
@@ -186,6 +192,20 @@ function updateFormats() {
   }
 }
 
+// Вызывается при нажатии кнопки пользователем — браузер доверяет этому клику
+function saveYT() {
+  if (pendingCobaltUrl) {
+    // window.open в ответ на клик пользователя — не блокируется браузером
+    window.open(pendingCobaltUrl, '_blank');
+  }
+}
+
+function saveServer() {
+  if (pendingServerTaskId) {
+    window.location.href = '/file/' + pendingServerTaskId;
+  }
+}
+
 async function startDownload() {
   const url = document.getElementById('urlInput').value.trim();
   if (!url) { alert('Вставьте ссылку!'); return; }
@@ -196,10 +216,13 @@ async function startDownload() {
   const btn = document.getElementById('downloadBtn');
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span>Подготовка...';
-  document.getElementById('fileBtnServer').style.display = 'none';
+  document.getElementById('saveBtnYT').style.display = 'none';
+  document.getElementById('saveBtnServer').style.display = 'none';
   document.getElementById('statusBox').style.display = 'block';
   document.getElementById('statusText').innerHTML = '<span class="spinner"></span>Запрос отправлен...';
   document.getElementById('progressFill').style.width = '10%';
+  pendingCobaltUrl = null;
+  pendingServerTaskId = null;
 
   try {
     const resp = await fetch('/download', {
@@ -247,22 +270,15 @@ function pollStatus() {
         btn.innerHTML = '⬇️ Скачать ещё';
 
         if (data.cobalt_url) {
-          // YouTube: сразу открываем скачивание — URL свежий прямо сейчас
-          statusEl.innerHTML = '<span class="success">✅ Готово! Скачивание началось автоматически.</span>';
-          // Создаём скрытую ссылку и кликаем по ней немедленно
-          const a = document.createElement('a');
-          a.href = data.cobalt_url;
-          a.download = data.filename || 'video.mp4';
-          a.style.display = 'none';
-          document.body.appendChild(a);
-          a.click();
-          setTimeout(() => document.body.removeChild(a), 1000);
+          // YouTube — запрашиваем свежий URL прямо перед показом кнопки
+          // URL хранится, пользователь нажимает кнопку сам — браузер не блокирует
+          pendingCobaltUrl = data.cobalt_url;
+          statusEl.innerHTML = '<span class="success">✅ Готово! Нажмите зелёную кнопку ниже.</span>';
+          document.getElementById('saveBtnYT').style.display = 'block';
         } else {
-          // Остальные сайты: показываем кнопку для скачивания с нашего сервера
-          statusEl.innerHTML = '<span class="success">✅ Готово! Нажмите кнопку ниже.</span>';
-          const serverBtn = document.getElementById('fileBtnServer');
-          serverBtn.href = '/file/' + currentTaskId;
-          serverBtn.style.display = 'block';
+          pendingServerTaskId = currentTaskId;
+          statusEl.innerHTML = '<span class="success">✅ Готово! Нажмите зелёную кнопку ниже.</span>';
+          document.getElementById('saveBtnServer').style.display = 'block';
         }
       } else if (data.status === 'error') {
         clearInterval(pollInterval);
@@ -388,9 +404,8 @@ def download_via_cobalt(task_id, url, dl_type, quality, fmt):
 
         file_url, raw_filename = result
         filename = safe_filename(raw_filename)
-        logger.info(f"[cobalt] URL получен: {file_url[:60]}... файл: {filename}")
+        logger.info(f"[cobalt] URL получен, файл: {filename}")
 
-        # Сразу отдаём URL фронтенду — он немедленно откроет скачивание
         tasks[task_id]['cobalt_url'] = file_url
         tasks[task_id]['cobalt_filename'] = filename
         tasks[task_id]['progress'] = 100
@@ -476,15 +491,13 @@ def status(task_id):
     task = tasks.get(task_id)
     if not task:
         return jsonify({'status': 'error', 'error': 'Задача не найдена'}), 404
-    resp = {
+    return jsonify({
         'status': task['status'],
         'progress': round(task.get('progress', 0)),
         'error': task.get('error'),
-        # Отдаём прямой cobalt URL фронтенду для немедленного скачивания
         'cobalt_url': task.get('cobalt_url'),
         'filename': task.get('cobalt_filename'),
-    }
-    return jsonify(resp)
+    })
 
 @app.route('/file/<task_id>')
 def get_file(task_id):
