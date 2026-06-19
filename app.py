@@ -349,14 +349,7 @@ def try_cobalt_instance(instance_url, payload):
 
 
 def fetch_and_save(file_url, out_path, task_id, start_progress=20):
-    dl_headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-        'Referer': 'https://cobalt.tools/',
-        'Accept': '*/*',
-        'Accept-Encoding': 'identity',
-        'Connection': 'keep-alive',
-    }
-    with requests.get(file_url, stream=True, timeout=(10, 300), headers=dl_headers) as r:
+    with requests.get(file_url, stream=True, timeout=(10, 300)) as r:
         logger.info(f"[cobalt] Скачивание → HTTP {r.status_code}")
         logger.info(f"[cobalt] Content-Length: {r.headers.get('Content-Length', 'нет')}")
         logger.info(f"[cobalt] Content-Type: {r.headers.get('Content-Type', 'нет')}")
