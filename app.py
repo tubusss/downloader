@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, send_file, render_template_string
+from flask import Flask, request, jsonify, render_template_string, redirect
 import yt_dlp
 import os
 import tempfile
@@ -8,8 +8,6 @@ import requests
 import logging
 import urllib.parse
 import re
-import time
-import random
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -17,9 +15,8 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 tasks = {}
 
-import os
 COBALT_INSTANCES = [
-    os.environ.get('COBALT_URL', 'https://cobalt-api-production-69b7.up.railway.app'),
+    'https://cobalt-api-production-69b7.up.railway.app',
 ]
 
 HTML = '''<!DOCTYPE html>
@@ -62,11 +59,11 @@ HTML = '''<!DOCTYPE html>
   .btn-primary { background: linear-gradient(135deg, #1a7fd4, #0f5fa8); color: #fff; }
   .btn-primary:active { transform: scale(0.98); }
   .btn-primary:disabled { background: #2a3448; color: #4a5a70; cursor: not-allowed; }
-  .btn-secondary { background: #0f5fa8; color: #fff; display: none; margin-top: 10px; }
+  .btn-secondary { background: #1a5fa8; color: #fff; display: none; margin-top: 10px; text-decoration: none; display: none; text-align: center; padding: 15px; border-radius: 12px; font-size: 1rem; font-weight: 600; }
   .status-box { background: #0f1520; border-radius: 12px; padding: 14px; margin-top: 12px; display: none; border: 1px solid #2a3448; }
   .status-text { font-size: 0.85rem; color: #8aa0bf; line-height: 1.6; }
   .progress-bar { width: 100%; height: 6px; background: #2a3448; border-radius: 3px; margin-top: 10px; overflow: hidden; }
-  .progress-fill { height: 100%; background: linear-gradient(90deg, #1a7fd4, #4db8ff); border-radius: 3px; width: 0%; transition: width 0.3s; }
+  .progress-fill { height: 100%; background: linear-gradient(90deg, #1a7fd4, #4db8ff); border-radius: 3px; width: 0%; transition: width 0.5s; }
   .badge { display: inline-block; padding: 3px 8px; border-radius: 6px; font-size: 0.7rem; font-weight: 600; margin-right: 4px; margin-bottom: 4px; }
   .badge-blue { background: #1a3a5c; color: #4db8ff; }
   .badge-green { background: #1a3a2a; color: #4dffaa; }
@@ -81,18 +78,26 @@ HTML = '''<!DOCTYPE html>
   .footer { text-align: center; padding: 20px 0 8px; font-size: 0.75rem; color: #3a4a60; }
   .keepalive { text-align: center; font-size: 0.7rem; color: #3a5a40; padding-bottom: 16px; }
   .cobalt-badge { display: inline-block; background: #1a2a3a; border: 1px solid #2a4a6a; border-radius: 6px; padding: 2px 7px; font-size: 0.7rem; color: #4db8ff; margin-left: 6px; vertical-align: middle; }
+  .info-box { background: #1a2a1a; border: 1px solid #2a4a2a; border-radius: 10px; padding: 12px; margin-bottom: 16px; font-size: 0.8rem; color: #6aaa7a; line-height: 1.5; }
 </style>
 </head>
 <body>
+
 <div class="header">
   <div class="logo">📥</div>
   <h1>Video Downloader</h1>
   <p>1000+ сайтов • YouTube • TikTok • SoundCloud и другие</p>
 </div>
+
+<div class="info-box">
+  💡 Для YouTube файл открывается напрямую через cobalt — нажми <b>⬇️ в браузере</b> чтобы сохранить, или используй кнопку "Скачать файл".
+</div>
+
 <div class="card">
   <div class="card-title">🔗 Ссылка на видео</div>
   <textarea id="urlInput" placeholder="Вставьте ссылку сюда&#10;Например: https://youtube.com/watch?v=...&#10;или https://soundcloud.com/..."></textarea>
 </div>
+
 <div class="card">
   <div class="card-title">⚙️ Формат</div>
   <div class="format-row">
@@ -122,12 +127,16 @@ HTML = '''<!DOCTYPE html>
     </select>
   </div>
 </div>
+
 <button class="btn btn-primary" id="downloadBtn" onclick="startDownload()">⬇️ Скачать</button>
+
 <div class="status-box" id="statusBox">
   <div class="status-text" id="statusText">Подготовка...</div>
   <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
 </div>
-<button class="btn btn-secondary" id="fileBtn" onclick="downloadFile()">💾 Сохранить файл</button>
+
+<a id="fileBtn" class="btn-secondary" href="#" download>💾 Скачать файл</a>
+
 <div class="card" style="margin-top:16px">
   <div class="card-title">📋 Поддерживаемые сайты</div>
   <div class="sites-grid">
@@ -144,13 +153,16 @@ HTML = '''<!DOCTYPE html>
     <span class="badge badge-yellow">и 990+ других</span>
   </div>
 </div>
+
 <div class="footer">Работает на yt-dlp + cobalt • Только для личного использования</div>
 <div class="keepalive"><span class="ping-dot"></span>Сервер активен</div>
+
 <script>
 let currentTaskId = null;
 let pollInterval = null;
-let downloadUrl = null;
+
 setInterval(() => { fetch('/ping').catch(() => {}); }, 4 * 60 * 1000);
+
 function updateFormats() {
   const type = document.getElementById('typeSelect').value;
   const qualitySelect = document.getElementById('qualitySelect');
@@ -177,19 +189,22 @@ function updateFormats() {
       <option value="mkv">MKV</option>`;
   }
 }
+
 async function startDownload() {
   const url = document.getElementById('urlInput').value.trim();
   if (!url) { alert('Вставьте ссылку!'); return; }
   const type = document.getElementById('typeSelect').value;
   const quality = document.getElementById('qualitySelect').value;
   const format = document.getElementById('formatSelect').value;
+
   const btn = document.getElementById('downloadBtn');
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span>Подготовка...';
   document.getElementById('fileBtn').style.display = 'none';
   document.getElementById('statusBox').style.display = 'block';
-  document.getElementById('statusText').textContent = 'Запрос отправлен...';
-  document.getElementById('progressFill').style.width = '5%';
+  document.getElementById('statusText').innerHTML = '<span class="spinner"></span>Запрос отправлен...';
+  document.getElementById('progressFill').style.width = '10%';
+
   try {
     const resp = await fetch('/download', {
       method: 'POST',
@@ -197,10 +212,17 @@ async function startDownload() {
       body: JSON.stringify({url, type, quality, format})
     });
     const data = await resp.json();
-    if (data.task_id) { currentTaskId = data.task_id; pollStatus(); }
-    else { showError(data.error || 'Неизвестная ошибка'); }
-  } catch(e) { showError('Ошибка соединения: ' + e.message); }
+    if (data.task_id) {
+      currentTaskId = data.task_id;
+      pollStatus();
+    } else {
+      showError(data.error || 'Неизвестная ошибка');
+    }
+  } catch(e) {
+    showError('Ошибка соединения: ' + e.message);
+  }
 }
+
 function pollStatus() {
   pollInterval = setInterval(async () => {
     try {
@@ -208,24 +230,39 @@ function pollStatus() {
       const data = await resp.json();
       const statusEl = document.getElementById('statusText');
       const progressEl = document.getElementById('progressFill');
+
       if (data.status === 'pending') {
         statusEl.innerHTML = '<span class="spinner"></span>Ожидание...';
-        progressEl.style.width = '8%';
+        progressEl.style.width = '15%';
       } else if (data.status === 'downloading') {
-        const pct = data.progress || 10;
+        const pct = data.progress || 20;
         progressEl.style.width = pct + '%';
         statusEl.innerHTML = '<span class="spinner"></span>Скачивание... ' + pct + '%';
         document.getElementById('downloadBtn').innerHTML = '<span class="spinner"></span>' + pct + '%';
       } else if (data.status === 'processing') {
-        progressEl.style.width = '95%';
-        statusEl.innerHTML = '<span class="spinner"></span>Обработка файла...';
+        progressEl.style.width = '90%';
+        statusEl.innerHTML = '<span class="spinner"></span>Обработка...';
       } else if (data.status === 'done') {
         clearInterval(pollInterval);
         progressEl.style.width = '100%';
-        statusEl.innerHTML = '<span class="success">✅ Готово! Нажмите кнопку ниже чтобы сохранить файл.</span>';
-        downloadUrl = '/file/' + currentTaskId;
-        document.getElementById('fileBtn').style.display = 'block';
+
+        const fileBtn = document.getElementById('fileBtn');
         const btn = document.getElementById('downloadBtn');
+
+        if (data.direct_url) {
+          // YouTube: браузер качает напрямую с cobalt
+          statusEl.innerHTML = '<span class="success">✅ Ссылка получена! Нажмите кнопку ниже.</span>';
+          fileBtn.href = data.direct_url;
+          fileBtn.download = data.filename || 'video.mp4';
+          fileBtn.style.display = 'block';
+        } else {
+          // Остальные сайты: качаем с нашего сервера
+          statusEl.innerHTML = '<span class="success">✅ Готово! Нажмите кнопку ниже.</span>';
+          fileBtn.href = '/file/' + currentTaskId;
+          fileBtn.download = '';
+          fileBtn.style.display = 'block';
+        }
+
         btn.disabled = false;
         btn.innerHTML = '⬇️ Скачать ещё';
       } else if (data.status === 'error') {
@@ -235,7 +272,7 @@ function pollStatus() {
     } catch(e) {}
   }, 1500);
 }
-function downloadFile() { if (downloadUrl) window.location.href = downloadUrl; }
+
 function showError(msg) {
   clearInterval(pollInterval);
   document.getElementById('statusText').innerHTML = '<span class="error">❌ ' + msg + '</span>';
@@ -247,7 +284,6 @@ function showError(msg) {
 </script>
 </body>
 </html>'''
-
 
 @app.route('/')
 def index():
@@ -267,71 +303,47 @@ def download():
     if not url:
         return jsonify({'error': 'URL не указан'}), 400
     task_id = str(uuid.uuid4())
-    tasks[task_id] = {'status': 'pending', 'progress': 0, 'file': None, 'error': None}
+    tasks[task_id] = {'status': 'pending', 'progress': 0, 'file': None,
+                      'error': None, 'direct_url': None, 'filename': None}
     thread = threading.Thread(target=run_download, args=(task_id, url, dl_type, quality, fmt))
     thread.daemon = True
     thread.start()
     return jsonify({'task_id': task_id})
 
-@app.route('/status/<task_id>')
-def status(task_id):
-    task = tasks.get(task_id)
-    if not task:
-        return jsonify({'status': 'error', 'error': 'Задача не найдена'}), 404
-    return jsonify({
-        'status': task['status'],
-        'progress': round(task.get('progress', 0)),
-        'error': task.get('error')
-    })
-
-@app.route('/file/<task_id>')
-def get_file(task_id):
-    task = tasks.get(task_id)
-    if not task or task['status'] != 'done' or not task['file']:
-        return 'Файл не найден', 404
-    filepath = task['file']
-    filename = os.path.basename(filepath)
-    return send_file(filepath, as_attachment=True, download_name=filename)
-
-
 def is_youtube(url):
     return 'youtube.com' in url or 'youtu.be' in url
 
 def cobalt_quality(quality_str):
-    for q in ['2160', '1440', '1080', '720', '480', '360', '240', '144']:
-        if q in quality_str:
-            return q
+    if '2160' in quality_str: return '2160'
+    if '1440' in quality_str: return '1440'
+    if '1080' in quality_str: return '1080'
+    if '720' in quality_str: return '720'
+    if '480' in quality_str: return '480'
+    if '360' in quality_str: return '360'
     return 'max'
 
 def safe_filename(name):
     name = name.replace('／', '_').replace('＼', '_')
     name = re.sub(r'[\\/*?:"<>|]', '_', name)
     name = re.sub(r'[\x00-\x1f\x7f]', '', name)
-    name = name.strip().strip('.')
-    return name[:180] or 'video'
-
+    return (name.strip().strip('.')[:180]) or 'video'
 
 def try_cobalt_instance(instance_url, payload):
     try:
         resp = requests.post(
             instance_url + '/',
             json=payload,
-            headers={
-                'Accept': 'application/json',
-                'Content-Type': 'application/json',
-            },
-            timeout=30
+            headers={'Accept': 'application/json', 'Content-Type': 'application/json'},
+            timeout=20
         )
-        logger.info(f"[cobalt] {instance_url} → HTTP {resp.status_code}: {resp.text[:200]}")
+        logger.info(f"[cobalt] {instance_url} → HTTP {resp.status_code}: {resp.text[:300]}")
         if resp.status_code != 200:
             return None
         data = resp.json()
         status = data.get('status')
         if status == 'error':
-            logger.warning(f"[cobalt] ошибка: {data.get('error', {})}")
             return None
-        file_url = None
-        filename = 'video'
+        file_url, filename = None, 'video'
         if status in ('redirect', 'tunnel'):
             file_url = data.get('url')
             filename = data.get('filename', 'video')
@@ -344,129 +356,67 @@ def try_cobalt_instance(instance_url, payload):
             return (file_url, filename)
         return None
     except Exception as e:
-        logger.warning(f"[cobalt] {instance_url} → исключение: {e}")
+        logger.warning(f"[cobalt] {instance_url} → ошибка: {e}")
         return None
 
-
-def fetch_and_save(file_url, out_path, task_id, start_progress=20):
-    with requests.get(file_url, stream=True, timeout=(10, 300)) as r:
-        logger.info(f"[cobalt] Скачивание → HTTP {r.status_code}")
-        logger.info(f"[cobalt] Content-Length: {r.headers.get('Content-Length', 'нет')}")
-        logger.info(f"[cobalt] Content-Type: {r.headers.get('Content-Type', 'нет')}")
-        if r.status_code != 200:
-            return 0, r.headers
-        total = int(r.headers.get('Content-Length', 0))
-        downloaded = 0
-        with open(out_path, 'wb') as f:
-            for chunk in r.iter_content(chunk_size=131072):
-                if chunk:
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if total > 0:
-                        pct = start_progress + int((downloaded / total) * (98 - start_progress))
-                        tasks[task_id]['progress'] = min(pct, 98)
-                    else:
-                        tasks[task_id]['progress'] = min(
-                            tasks[task_id].get('progress', start_progress) + 1, 98
-                        )
-        return downloaded, r.headers
-
-
 def download_via_cobalt(task_id, url, dl_type, quality, fmt):
-    tmp_dir = tempfile.mkdtemp()
+    """
+    Для YouTube: НЕ качаем файл через сервер.
+    Просто получаем прямую ссылку от cobalt и отдаём её браузеру.
+    Браузер качает напрямую — без ограничений по времени и размеру.
+    """
     try:
         tasks[task_id]['status'] = 'downloading'
-        tasks[task_id]['progress'] = 5
+        tasks[task_id]['progress'] = 30
 
         payload = {
             'url': url,
             'downloadMode': 'audio' if dl_type == 'audio' else 'auto',
             'videoQuality': cobalt_quality(quality),
-            'audioFormat': (fmt if fmt in ['mp3', 'ogg', 'wav', 'opus'] else 'mp3') if dl_type == 'audio' else 'best',
+            'audioFormat': fmt if dl_type == 'audio' and fmt in ['mp3', 'ogg', 'wav', 'opus'] else 'mp3' if dl_type == 'audio' else 'best',
             'filenameStyle': 'pretty',
         }
 
-        ext = (fmt if fmt in ['mp3', 'm4a', 'opus'] else 'mp3') if dl_type == 'audio' else 'mp4'
-        valid_exts = ['mp4', 'mkv', 'mp3', 'm4a', 'opus', 'webm', 'ogg']
-
+        result = None
         for instance in COBALT_INSTANCES:
             logger.info(f"[cobalt] Пробуем: {instance}")
             result = try_cobalt_instance(instance, payload)
-            if not result:
-                continue
+            if result:
+                break
 
-            file_url, raw_filename = result
-            # Переключаемся на внутренний адрес для скачивания туннеля
-            file_url = file_url.replace(
-                'https://cobalt-api-production-69b7.up.railway.app',
-                'http://cobalt-api.railway.internal:9000'
-            )
-            logger.info(f"[cobalt] Туннель URL: {file_url[:80]}")
-            tasks[task_id]['progress'] = 15
+        if not result:
+            tasks[task_id]['status'] = 'error'
+            tasks[task_id]['error'] = 'Cobalt не ответил. Попробуйте позже.'
+            return
 
-            filename = safe_filename(raw_filename or 'video')
-            if not any(filename.lower().endswith(f'.{e}') for e in valid_exts):
-                base = os.path.splitext(filename)[0] if '.' in filename else filename
-                filename = f'{base}.{ext}'
+        file_url, raw_filename = result
+        filename = safe_filename(raw_filename)
 
-            out_path = os.path.join(tmp_dir, filename)
-            logger.info(f"[cobalt] Файл: [{filename}]")
+        valid_exts = ['mp4', 'mkv', 'mp3', 'm4a', 'opus', 'webm', 'ogg']
+        ext = fmt if dl_type == 'audio' and fmt in ['mp3', 'm4a', 'opus'] else 'mp4'
+        if not any(filename.lower().endswith(f'.{e}') for e in valid_exts):
+            filename = f'{os.path.splitext(filename)[0]}.{ext}'
 
-            try:
-                downloaded, resp_headers = fetch_and_save(file_url, out_path, task_id)
-            except Exception as e:
-                logger.warning(f"[cobalt] ошибка скачивания: {e}")
-                downloaded = 0
-                resp_headers = {}
+        logger.info(f"[cobalt] Прямая ссылка получена: {file_url[:80]}...")
+        logger.info(f"[cobalt] Имя файла: {filename}")
 
-            logger.info(f"[cobalt] записано {downloaded} байт")
-
-            if downloaded > 0:
-                content_disp = resp_headers.get('Content-Disposition', '')
-                better_name = None
-                if "filename*=UTF-8''" in content_disp:
-                    encoded = content_disp.split("filename*=UTF-8''")[-1].split(';')[0].strip().strip('"\'')
-                    try:
-                        better_name = urllib.parse.unquote(encoded)
-                    except Exception:
-                        pass
-                if not better_name and 'filename=' in content_disp:
-                    part = content_disp.split('filename=')[-1].split(';')[0].strip().strip('"\'')
-                    if not part.upper().startswith('UTF-8') and part:
-                        better_name = part
-                if better_name:
-                    better_name = safe_filename(better_name)
-                    if not any(better_name.lower().endswith(f'.{e}') for e in valid_exts):
-                        base = os.path.splitext(better_name)[0] if '.' in better_name else better_name
-                        better_name = f'{base}.{ext}'
-                    new_path = os.path.join(tmp_dir, better_name)
-                    if new_path != out_path:
-                        try:
-                            os.rename(out_path, new_path)
-                            out_path = new_path
-                        except Exception:
-                            pass
-
-                tasks[task_id]['file'] = out_path
-                tasks[task_id]['status'] = 'done'
-                tasks[task_id]['progress'] = 100
-                logger.info(f"[cobalt] Успех!")
-                return True
-
-            try:
-                os.remove(out_path)
-            except Exception:
-                pass
-
-        logger.warning("[cobalt] Не удалось скачать")
-        return False
+        # Отдаём прямую ссылку браузеру — он сам качает
+        tasks[task_id]['direct_url'] = file_url
+        tasks[task_id]['filename'] = filename
+        tasks[task_id]['progress'] = 100
+        tasks[task_id]['status'] = 'done'
 
     except Exception as e:
         logger.error(f"[cobalt] Исключение: {e}", exc_info=True)
-        return False
+        tasks[task_id]['status'] = 'error'
+        tasks[task_id]['error'] = str(e)[:300]
 
+def run_download(task_id, url, dl_type, quality, fmt):
+    if is_youtube(url):
+        download_via_cobalt(task_id, url, dl_type, quality, fmt)
+        return
 
-def download_via_ytdlp(task_id, url, dl_type, quality, fmt):
+    # Остальные сайты — yt-dlp, скачиваем на сервер
     tmp_dir = tempfile.mkdtemp()
     output_path = os.path.join(tmp_dir, '%(title)s.%(ext)s')
 
@@ -476,7 +426,7 @@ def download_via_ytdlp(task_id, url, dl_type, quality, fmt):
             try:
                 tasks[task_id]['progress'] = float(pct_str)
                 tasks[task_id]['status'] = 'downloading'
-            except Exception:
+            except:
                 pass
         elif d['status'] == 'finished':
             tasks[task_id]['progress'] = 99
@@ -511,7 +461,6 @@ def download_via_ytdlp(task_id, url, dl_type, quality, fmt):
 
     try:
         tasks[task_id]['status'] = 'downloading'
-        tasks[task_id]['progress'] = 5
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
 
@@ -526,25 +475,34 @@ def download_via_ytdlp(task_id, url, dl_type, quality, fmt):
             tasks[task_id]['file'] = found_file
             tasks[task_id]['status'] = 'done'
             tasks[task_id]['progress'] = 100
-        else:
+        else
             tasks[task_id]['status'] = 'error'
             tasks[task_id]['error'] = 'Файл не найден после скачивания'
     except Exception as e:
         tasks[task_id]['status'] = 'error'
         tasks[task_id]['error'] = str(e)[:300]
 
+@app.route('/status/<task_id>')
+def status(task_id):
+    task = tasks.get(task_id)
+    if not task:
+        return jsonify({'status': 'error', 'error': 'Задача не найдена'}), 404
+    return jsonify({
+        'status': task['status'],
+        'progress': round(task.get('progress', 0)),
+        'error': task.get('error'),
+        'direct_url': task.get('direct_url'),
+        'filename': task.get('filename'),
+    })
 
-def run_download(task_id, url, dl_type, quality, fmt):
-    if is_youtube(url):
-        logger.info("[run] YouTube — cobalt")
-        success = download_via_cobalt(task_id, url, dl_type, quality, fmt)
-        if not success:
-            tasks[task_id]['status'] = 'error'
-            tasks[task_id]['error'] = 'Не удалось скачать. Попробуйте позже или другое видео.'
-        return
-
-    download_via_ytdlp(task_id, url, dl_type, quality, fmt)
-
+@app.route('/file/<task_id>')
+def get_file(task_id):
+    from flask import send_file
+    task = tasks.get(task_id)
+    if not task or task['status'] != 'done' or not task['file']:
+        return 'Файл не найден', 404
+    return send_file(task['file'], as_attachment=True,
+                     download_name=os.path.basename(task['file']))
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=7860)
