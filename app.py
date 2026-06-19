@@ -6,7 +6,6 @@ import threading
 import uuid
 import requests
 import logging
-import urllib.parse
 import re
 
 logging.basicConfig(level=logging.INFO)
@@ -59,12 +58,7 @@ HTML = '''<!DOCTYPE html>
   .btn-primary { background: linear-gradient(135deg, #1a7fd4, #0f5fa8); color: #fff; }
   .btn-primary:active { transform: scale(0.98); }
   .btn-primary:disabled { background: #2a3448; color: #4a5a70; cursor: not-allowed; }
-  .btn-download-link {
-    display: none; margin-top: 10px; width: 100%; padding: 15px;
-    border-radius: 12px; background: #0f5fa8; color: #fff;
-    font-size: 1rem; font-weight: 600; text-align: center;
-    text-decoration: none; cursor: pointer;
-  }
+  .btn-secondary { background: #0f5fa8; color: #fff; display: none; margin-top: 10px; text-decoration: none; text-align: center; padding: 15px; border-radius: 12px; font-size: 1rem; font-weight: 600; }
   .status-box { background: #0f1520; border-radius: 12px; padding: 14px; margin-top: 12px; display: none; border: 1px solid #2a3448; }
   .status-text { font-size: 0.85rem; color: #8aa0bf; line-height: 1.6; }
   .progress-bar { width: 100%; height: 6px; background: #2a3448; border-radius: 3px; margin-top: 10px; overflow: hidden; }
@@ -76,6 +70,7 @@ HTML = '''<!DOCTYPE html>
   .sites-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
   .error { color: #ff6b6b; }
   .success { color: #4dffaa; }
+  .info { color: #4db8ff; }
   .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #2a3448; border-top-color: #4db8ff; border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: middle; margin-right: 6px; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .ping-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #4dffaa; margin-right: 5px; animation: pulse 2s infinite; }
@@ -135,11 +130,8 @@ HTML = '''<!DOCTYPE html>
   <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
 </div>
 
-<!-- Кнопка для YouTube (прямая ссылка на cobalt) -->
-<a id="fileBtnDirect" class="btn-download-link" href="#">💾 Сохранить файл</a>
-
-<!-- Кнопка для остальных сайтов (файл с нашего сервера) -->
-<a id="fileBtnServer" class="btn-download-link" href="#">💾 Сохранить файл</a>
+<!-- Кнопка для не-YouTube файлов с нашего сервера -->
+<a id="fileBtnServer" class="btn-secondary" href="#" style="display:none">💾 Сохранить файл</a>
 
 <div class="card" style="margin-top:16px">
   <div class="card-title">📋 Поддерживаемые сайты</div>
@@ -194,11 +186,6 @@ function updateFormats() {
   }
 }
 
-function hideAllFileBtns() {
-  document.getElementById('fileBtnDirect').style.display = 'none';
-  document.getElementById('fileBtnServer').style.display = 'none';
-}
-
 async function startDownload() {
   const url = document.getElementById('urlInput').value.trim();
   if (!url) { alert('Вставьте ссылку!'); return; }
@@ -209,7 +196,7 @@ async function startDownload() {
   const btn = document.getElementById('downloadBtn');
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span>Подготовка...';
-  hideAllFileBtns();
+  document.getElementById('fileBtnServer').style.display = 'none';
   document.getElementById('statusBox').style.display = 'block';
   document.getElementById('statusText').innerHTML = '<span class="spinner"></span>Запрос отправлен...';
   document.getElementById('progressFill').style.width = '10%';
@@ -254,19 +241,25 @@ function pollStatus() {
       } else if (data.status === 'done') {
         clearInterval(pollInterval);
         progressEl.style.width = '100%';
-        statusEl.innerHTML = '<span class="success">✅ Готово! Нажмите кнопку ниже чтобы сохранить.</span>';
 
         const btn = document.getElementById('downloadBtn');
         btn.disabled = false;
         btn.innerHTML = '⬇️ Скачать ещё';
 
-        if (data.cobalt_task_id) {
-          // YouTube — редирект через наш сервер на cobalt
-          const directBtn = document.getElementById('fileBtnDirect');
-          directBtn.href = '/cobalt_file/' + data.cobalt_task_id;
-          directBtn.style.display = 'block';
+        if (data.cobalt_url) {
+          // YouTube: сразу открываем скачивание — URL свежий прямо сейчас
+          statusEl.innerHTML = '<span class="success">✅ Готово! Скачивание началось автоматически.</span>';
+          // Создаём скрытую ссылку и кликаем по ней немедленно
+          const a = document.createElement('a');
+          a.href = data.cobalt_url;
+          a.download = data.filename || 'video.mp4';
+          a.style.display = 'none';
+          document.body.appendChild(a);
+          a.click();
+          setTimeout(() => document.body.removeChild(a), 1000);
         } else {
-          // Остальные сайты — файл лежит у нас
+          // Остальные сайты: показываем кнопку для скачивания с нашего сервера
+          statusEl.innerHTML = '<span class="success">✅ Готово! Нажмите кнопку ниже.</span>';
           const serverBtn = document.getElementById('fileBtnServer');
           serverBtn.href = '/file/' + currentTaskId;
           serverBtn.style.display = 'block';
@@ -371,7 +364,7 @@ def try_cobalt_instance(instance_url, payload):
 def download_via_cobalt(task_id, url, dl_type, quality, fmt):
     try:
         tasks[task_id]['status'] = 'downloading'
-        tasks[task_id]['progress'] = 30
+        tasks[task_id]['progress'] = 50
 
         payload = {
             'url': url,
@@ -395,9 +388,9 @@ def download_via_cobalt(task_id, url, dl_type, quality, fmt):
 
         file_url, raw_filename = result
         filename = safe_filename(raw_filename)
-        logger.info(f"[cobalt] URL получен, файл: {filename}")
+        logger.info(f"[cobalt] URL получен: {file_url[:60]}... файл: {filename}")
 
-        # Сохраняем ссылку — браузер будет качать напрямую через /cobalt_file/
+        # Сразу отдаём URL фронтенду — он немедленно откроет скачивание
         tasks[task_id]['cobalt_url'] = file_url
         tasks[task_id]['cobalt_filename'] = filename
         tasks[task_id]['progress'] = 100
@@ -487,23 +480,11 @@ def status(task_id):
         'status': task['status'],
         'progress': round(task.get('progress', 0)),
         'error': task.get('error'),
+        # Отдаём прямой cobalt URL фронтенду для немедленного скачивания
+        'cobalt_url': task.get('cobalt_url'),
+        'filename': task.get('cobalt_filename'),
     }
-    # Если это YouTube-задача — возвращаем cobalt_task_id для редиректа
-    if task.get('cobalt_url'):
-        resp['cobalt_task_id'] = task_id
     return jsonify(resp)
-
-@app.route('/cobalt_file/<task_id>')
-def cobalt_file(task_id):
-    """Редирект браузера напрямую на cobalt tunnel URL."""
-    task = tasks.get(task_id)
-    if not task or not task.get('cobalt_url'):
-        return 'Ссылка не найдена или устарела', 404
-    cobalt_url = task['cobalt_url']
-    filename = task.get('cobalt_filename', 'video.mp4')
-    logger.info(f"[cobalt_file] Редирект на: {cobalt_url[:80]}...")
-    # Делаем редирект — браузер сам качает файл с cobalt напрямую
-    return redirect(cobalt_url)
 
 @app.route('/file/<task_id>')
 def get_file(task_id):
