@@ -475,7 +475,7 @@ def run_download(task_id, url, dl_type, quality, fmt):
             tasks[task_id]['file'] = found_file
             tasks[task_id]['status'] = 'done'
             tasks[task_id]['progress'] = 100
-        else
+        else:
             tasks[task_id]['status'] = 'error'
             tasks[task_id]['error'] = 'Файл не найден после скачивания'
     except Exception as e:
