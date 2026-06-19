@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify, render_template_string, Response, stream_with_context
 import yt_dlp
 import os
 import tempfile
@@ -7,6 +7,7 @@ import uuid
 import requests
 import logging
 import re
+import urllib.parse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -54,15 +55,11 @@ HTML = '''<!DOCTYPE html>
     background-repeat: no-repeat; background-position: right 12px center;
   }
   select:focus { border-color: #4db8ff; }
-  .btn {
-    width: 100%; padding: 15px; border-radius: 12px; border: none;
-    font-size: 1rem; font-weight: 600; cursor: pointer; transition: all 0.2s; margin-top: 4px;
-  }
+  .btn { width: 100%; padding: 15px; border-radius: 12px; border: none; font-size: 1rem; font-weight: 600; cursor: pointer; transition: all 0.2s; margin-top: 4px; }
   .btn-primary { background: linear-gradient(135deg, #1a7fd4, #0f5fa8); color: #fff; }
   .btn-primary:active { transform: scale(0.98); }
   .btn-primary:disabled { background: #2a3448; color: #4a5a70; cursor: not-allowed; }
   .btn-green { background: linear-gradient(135deg, #1a9a4a, #0f7a35); color: #fff; display: none; margin-top: 10px; }
-  .btn-green:active { transform: scale(0.98); }
   .status-box { background: #0f1520; border-radius: 12px; padding: 14px; margin-top: 12px; display: none; border: 1px solid #2a3448; }
   .status-text { font-size: 0.85rem; color: #8aa0bf; line-height: 1.6; }
   .progress-bar { width: 100%; height: 6px; background: #2a3448; border-radius: 3px; margin-top: 10px; overflow: hidden; }
@@ -84,18 +81,15 @@ HTML = '''<!DOCTYPE html>
 </style>
 </head>
 <body>
-
 <div class="header">
   <div class="logo">📥</div>
   <h1>Video Downloader</h1>
   <p>1000+ сайтов • YouTube • TikTok • SoundCloud и другие</p>
 </div>
-
 <div class="card">
   <div class="card-title">🔗 Ссылка на видео</div>
   <textarea id="urlInput" placeholder="Вставьте ссылку сюда&#10;Например: https://youtube.com/watch?v=...&#10;или https://soundcloud.com/..."></textarea>
 </div>
-
 <div class="card">
   <div class="card-title">⚙️ Формат</div>
   <div class="format-row">
@@ -125,18 +119,12 @@ HTML = '''<!DOCTYPE html>
     </select>
   </div>
 </div>
-
 <button class="btn btn-primary" id="downloadBtn" onclick="startDownload()">⬇️ Скачать</button>
-
 <div class="status-box" id="statusBox">
   <div class="status-text" id="statusText">Подготовка...</div>
   <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
 </div>
-
-<!-- Кнопка появляется после готовности, пользователь нажимает сам -->
-<button class="btn btn-green" id="saveBtnYT" onclick="saveYT()">💾 Нажмите чтобы скачать</button>
-<button class="btn btn-green" id="saveBtnServer" onclick="saveServer()">💾 Сохранить файл</button>
-
+<button class="btn btn-green" id="saveBtn" onclick="saveFile()">💾 Сохранить файл</button>
 <div class="card" style="margin-top:16px">
   <div class="card-title">📋 Поддерживаемые сайты</div>
   <div class="sites-grid">
@@ -153,15 +141,11 @@ HTML = '''<!DOCTYPE html>
     <span class="badge badge-yellow">и 990+ других</span>
   </div>
 </div>
-
 <div class="footer">Работает на yt-dlp + cobalt • Только для личного использования</div>
 <div class="keepalive"><span class="ping-dot"></span>Сервер активен</div>
-
 <script>
 let currentTaskId = null;
 let pollInterval = null;
-let pendingCobaltUrl = null;
-let pendingServerTaskId = null;
 
 setInterval(() => { fetch('/ping').catch(() => {}); }, 4 * 60 * 1000);
 
@@ -192,17 +176,10 @@ function updateFormats() {
   }
 }
 
-// Вызывается при нажатии кнопки пользователем — браузер доверяет этому клику
-function saveYT() {
-  if (pendingCobaltUrl) {
-    // window.open в ответ на клик пользователя — не блокируется браузером
-    window.open(pendingCobaltUrl, '_blank');
-  }
-}
-
-function saveServer() {
-  if (pendingServerTaskId) {
-    window.location.href = '/file/' + pendingServerTaskId;
+// Пользователь нажимает кнопку — браузер идёт на /stream/ который стримит файл напрямую
+function saveFile() {
+  if (currentTaskId) {
+    window.location.href = '/stream/' + currentTaskId;
   }
 }
 
@@ -216,13 +193,10 @@ async function startDownload() {
   const btn = document.getElementById('downloadBtn');
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span>Подготовка...';
-  document.getElementById('saveBtnYT').style.display = 'none';
-  document.getElementById('saveBtnServer').style.display = 'none';
+  document.getElementById('saveBtn').style.display = 'none';
   document.getElementById('statusBox').style.display = 'block';
   document.getElementById('statusText').innerHTML = '<span class="spinner"></span>Запрос отправлен...';
   document.getElementById('progressFill').style.width = '10%';
-  pendingCobaltUrl = null;
-  pendingServerTaskId = null;
 
   try {
     const resp = await fetch('/download', {
@@ -264,22 +238,11 @@ function pollStatus() {
       } else if (data.status === 'done') {
         clearInterval(pollInterval);
         progressEl.style.width = '100%';
-
+        statusEl.innerHTML = '<span class="success">✅ Готово! Нажмите кнопку ниже.</span>';
         const btn = document.getElementById('downloadBtn');
         btn.disabled = false;
         btn.innerHTML = '⬇️ Скачать ещё';
-
-        if (data.cobalt_url) {
-          // YouTube — запрашиваем свежий URL прямо перед показом кнопки
-          // URL хранится, пользователь нажимает кнопку сам — браузер не блокирует
-          pendingCobaltUrl = data.cobalt_url;
-          statusEl.innerHTML = '<span class="success">✅ Готово! Нажмите зелёную кнопку ниже.</span>';
-          document.getElementById('saveBtnYT').style.display = 'block';
-        } else {
-          pendingServerTaskId = currentTaskId;
-          statusEl.innerHTML = '<span class="success">✅ Готово! Нажмите зелёную кнопку ниже.</span>';
-          document.getElementById('saveBtnServer').style.display = 'block';
-        }
+        document.getElementById('saveBtn').style.display = 'block';
       } else if (data.status === 'error') {
         clearInterval(pollInterval);
         showError(data.error || 'Ошибка при скачивании');
@@ -322,6 +285,7 @@ def download():
         'status': 'pending', 'progress': 0,
         'file': None, 'error': None,
         'cobalt_url': None, 'cobalt_filename': None,
+        'is_youtube': False,
     }
     thread = threading.Thread(target=run_download, args=(task_id, url, dl_type, quality, fmt))
     thread.daemon = True
@@ -378,9 +342,11 @@ def try_cobalt_instance(instance_url, payload):
         return None
 
 def download_via_cobalt(task_id, url, dl_type, quality, fmt):
+    """Получаем URL от cobalt и сохраняем — стриминг к пользователю по кнопке."""
     try:
         tasks[task_id]['status'] = 'downloading'
-        tasks[task_id]['progress'] = 50
+        tasks[task_id]['progress'] = 40
+        tasks[task_id]['is_youtube'] = True
 
         payload = {
             'url': url,
@@ -406,8 +372,12 @@ def download_via_cobalt(task_id, url, dl_type, quality, fmt):
         filename = safe_filename(raw_filename)
         logger.info(f"[cobalt] URL получен, файл: {filename}")
 
-        tasks[task_id]['cobalt_url'] = file_url
+        # Сохраняем URL — /stream/ запросит его заново когда пользователь нажмёт кнопку
+        # Но URL одноразовый! Поэтому запрашиваем новый URL прямо в /stream/
+        # Здесь сохраняем payload чтобы /stream/ мог повторить запрос к cobalt
+        tasks[task_id]['cobalt_payload'] = payload
         tasks[task_id]['cobalt_filename'] = filename
+        tasks[task_id]['cobalt_instance'] = COBALT_INSTANCES[0]
         tasks[task_id]['progress'] = 100
         tasks[task_id]['status'] = 'done'
 
@@ -495,9 +465,87 @@ def status(task_id):
         'status': task['status'],
         'progress': round(task.get('progress', 0)),
         'error': task.get('error'),
-        'cobalt_url': task.get('cobalt_url'),
-        'filename': task.get('cobalt_filename'),
     })
+
+@app.route('/stream/<task_id>')
+def stream_file(task_id):
+    """
+    Для YouTube: запрашивает СВЕЖИЙ URL у cobalt прямо сейчас и стримит файл.
+    Для остальных: отдаёт сохранённый файл.
+    Вызывается когда пользователь нажимает кнопку — URL всегда свежий.
+    """
+    task = tasks.get(task_id)
+    if not task or task['status'] != 'done':
+        return 'Задача не найдена', 404
+
+    # Не-YouTube: отдаём файл с диска
+    if not task.get('is_youtube'):
+        from flask import send_file
+        if not task.get('file'):
+            return 'Файл не найден', 404
+        return send_file(task['file'], as_attachment=True,
+                         download_name=os.path.basename(task['file']))
+
+    # YouTube: запрашиваем НОВЫЙ свежий URL у cobalt прямо сейчас
+    payload = task.get('cobalt_payload')
+    filename = task.get('cobalt_filename', 'video.mp4')
+    instance = task.get('cobalt_instance', COBALT_INSTANCES[0])
+
+    if not payload:
+        return 'Данные задачи потеряны', 404
+
+    logger.info(f"[stream] Запрашиваем свежий URL у cobalt для стриминга...")
+    result = try_cobalt_instance(instance, payload)
+
+    if not result:
+        return 'Не удалось получить ссылку от cobalt. Попробуйте скачать заново.', 502
+
+    fresh_url, _ = result
+    logger.info(f"[stream] Свежий URL получен, начинаем стриминг: {fresh_url[:60]}...")
+
+    # Определяем Content-Type
+    ext = os.path.splitext(filename)[1].lower()
+    content_type_map = {
+        '.mp4': 'video/mp4', '.mkv': 'video/x-matroska',
+        '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4',
+        '.opus': 'audio/ogg', '.webm': 'video/webm',
+    }
+    content_type = content_type_map.get(ext, 'application/octet-stream')
+
+    # Стримим файл от cobalt напрямую пользователю
+    cobalt_resp = requests.get(
+        fresh_url,
+        stream=True,
+        timeout=300,
+        headers={
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        }
+    )
+
+    if cobalt_resp.status_code != 200:
+        return f'Cobalt вернул ошибку: {cobalt_resp.status_code}', 502
+
+    safe_name = urllib.parse.quote(filename)
+
+    def generate():
+        for chunk in cobalt_resp.iter_content(chunk_size=65536):
+            if chunk:
+                yield chunk
+
+    headers = {
+        'Content-Disposition': f"attachment; filename*=UTF-8''{safe_name}",
+        'Content-Type': content_type,
+        'X-Accel-Buffering': 'no',
+    }
+    # Передаём Content-Length если cobalt его знает
+    if 'Content-Length' in cobalt_resp.headers:
+        headers['Content-Length'] = cobalt_resp.headers['Content-Length']
+
+    return Response(
+        stream_with_context(generate()),
+        headers=headers,
+        status=200
+    )
 
 @app.route('/file/<task_id>')
 def get_file(task_id):
