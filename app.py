@@ -403,6 +403,11 @@ def download_via_cobalt(task_id, url, dl_type, quality, fmt):
                 continue
 
             file_url, raw_filename = result
+            # Переключаемся на внутренний адрес для скачивания туннеля
+            file_url = file_url.replace(
+                'https://cobalt-api-production-69b7.up.railway.app',
+                'http://cobalt-api.railway.internal:9000'
+            )
             tasks[task_id]['progress'] = 15
 
             filename = safe_filename(raw_filename or 'video')
