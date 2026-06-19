@@ -179,7 +179,12 @@ function updateFormats() {
 // Пользователь нажимает кнопку — браузер идёт на /stream/ который стримит файл напрямую
 function saveFile() {
   if (currentTaskId) {
-    window.location.href = '/stream/' + currentTaskId;
+    const a = document.createElement('a');
+    a.href = '/stream/' + currentTaskId;
+    a.setAttribute('download', '');
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   }
 }
 
